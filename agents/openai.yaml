@@ -1,3 +1,3 @@
 display_name: 竞彩日分析
-short_description: 每日竞彩赛事全量分析工作流
+short_description: 每日竞彩批量预测、赔率刷新与复盘
 default_prompt: 分析今天竞彩所有比赛
