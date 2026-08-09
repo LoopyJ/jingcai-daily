@@ -218,11 +218,19 @@ python .agents/skills/jingcai-daily/scripts/validate_run.py \
 
 ## 赛后批量复盘
 
-1. 从历史中找出指定业务日或 match ID 的“待确认”记录，并核验 90 分钟正式赛果和来源时间。
-2. 对每场调用 `$soccer-predict` 复盘流程，但沿用 `archive_mode=parent`：分析单元只返回偏差分析、联赛资料建议和权重调整建议，不写共享文件。
-3. 主 agent 按 `kickoff_time + match_id` 的稳定顺序串行应用复盘。每处理一场前重新读取最新权重，遵守 soccer-predict 的单场学习护栏，再写回权重和版本。
-4. 原地更新带稳定键的历史条目，不为同一场另建赛前条目；没有可靠赛果时保持“待确认”，不更新权重。
-5. 更新 `reports/{business_date}/review-summary.html`，汇总推荐、实际赛果、命中、偏差原因、是否参与学习和累计统计。
+1. 复盘集合不得只从历史取数。对指定业务日，先读取历史中的“待确认”记录，再读取
+   `reports/{business_date}/runs/*/run-manifest.json` 的全部候选，取二者并集并按
+   `business_date + match_id` 去重。`success`、`waiting` 和 `incomplete` 都进入复盘集合；
+   `failed` 仅在存在可识别的赛前方向或预测比分时进入，否则单列为“无可复盘预测”。这样可覆盖因未达到
+   success 发布门槛而没有写入历史、但已经形成冻结观察方向的尝试产物。
+2. 对 manifest 中没有历史条目的 `waiting/incomplete` 场次，读取其 `attempt_result_path` 和
+   `attempt_report_path` 作为赛前冻结快照。复盘与汇总必须明确标记“非正式观察”，不得把它升级为正式
+   推荐，也不得计入正式 AH/OU 或竞彩命中率；可靠赛果核验后可写入带稳定键的观察复盘条目，保存原始
+   `analysis_status`、运行 ID 和尝试报告路径。
+3. 对每场调用 `$soccer-predict` 复盘流程，但沿用 `archive_mode=parent`：分析单元只返回偏差分析、联赛资料建议和权重调整建议，不写共享文件。
+4. 主 agent 按 `kickoff_time + match_id` 的稳定顺序串行应用复盘。每处理一场前重新读取最新权重，遵守 soccer-predict 的单场学习护栏，再写回权重和版本。
+5. 原地更新带稳定键的历史条目，不为同一场另建赛前条目；没有历史条目但存在可复盘尝试产物时，按第2条创建明确标注为“非正式观察复盘”的稳定键条目。没有可靠赛果时保持“待确认”，不更新权重。
+6. 更新 `reports/{business_date}/review-summary.html`，逐一覆盖并核对并集中的每个 match ID，汇总正式推荐、非正式观察、实际赛果、命中、偏差原因、是否参与学习和累计统计；最终数量必须与去重后的复盘集合一致。
 
 ## 最终交付
 
