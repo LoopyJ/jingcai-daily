@@ -23,6 +23,19 @@
   "recommendation": "赫根 -1",
   "probability": 0.56,
   "predicted_score": "2-0",
+  "score_scenarios": {
+    "unconditional_mode": {
+      "score": "2-0",
+      "probability": 0.12
+    },
+    "primary_market_mode": {
+      "market": "赫根 -1",
+      "condition": "full_win",
+      "score": "2-0",
+      "joint_probability": 0.12,
+      "conditional_probability": 0.21
+    }
+  },
   "formal_recommendation": true,
   "report_path": "soccer-prediction-journal/reports/2026-08-01/match-2912225.html",
   "missing_data": [],
@@ -37,6 +50,12 @@
 - `match_id` 必须为纯数字字符串；不要写成 JSON 数字，以免未来 ID 格式变化造成兼容问题。
 - `kickoff_time` 和 `odds_snapshot_at` 使用 ISO 8601，并包含 `+08:00`。
 - `probability` 为 `0..1` 数值或 `null`。
+- 新生成的结果必须提供 `score_scenarios`：`unconditional_mode` 保存全局精确比分众数及其概率；
+  `primary_market_mode` 保存主推荐（或报告中首个明确观察方向）全赢条件下概率最高的代表比分。若没有任何
+  市场方向，`primary_market_mode` 可为 `null`。整数大小球的条件比分必须落在全赢区域，不能用走盘比分；
+  亚盘和竞彩让球胜平负必须按各自结算规则确定条件。旧版1.0产物缺少该字段时仍可读取，但刷新/新生成时必须补齐。
+- `predicted_score` 作为兼容字段保留。存在正式推荐时，它必须等于 `primary_market_mode.score`；仅有观察方向时，
+  若全局众数会输掉该观察盘口，报告必须同时展示两个场景，不能只显示裸 `predicted_score`。
 - `missing_data` 始终为数组，`error` 始终为字符串。
 - `success` 必须给出正式 `report_path`，且对应 HTML 完整存在。
 - `waiting/incomplete/failed` 的 `formal_recommendation` 必须为 `false`；可在 `recommendation` 中写“等待首发”或“数据不足，不投注”等非投注结论。

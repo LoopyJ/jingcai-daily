@@ -163,6 +163,53 @@ def validate_result_json(
         errors.append(f"{label}.formal_recommendation must be a boolean")
     if expected_status != "success" and data.get("formal_recommendation") is not False:
         errors.append(f"{label} cannot contain a formal recommendation when status is {expected_status}")
+    version_match = re.search(r"(\d+)\.(\d+)\.(\d+)", str(data.get("analysis_version", "")))
+    if version_match and tuple(map(int, version_match.groups())) >= (1, 3, 17):
+        scenarios = data.get("score_scenarios")
+        if not isinstance(scenarios, dict):
+            errors.append(f"{label}.score_scenarios is required for analysis_version >= 1.3.17")
+        else:
+            unconditional = scenarios.get("unconditional_mode")
+            primary = scenarios.get("primary_market_mode")
+            if not isinstance(unconditional, dict):
+                errors.append(f"{label}.score_scenarios.unconditional_mode must be an object")
+            else:
+                if not re.fullmatch(r"\d+-\d+", str(unconditional.get("score", ""))):
+                    errors.append(f"{label}.score_scenarios.unconditional_mode.score must use N-N")
+                mode_probability = unconditional.get("probability")
+                if (
+                    isinstance(mode_probability, bool)
+                    or not isinstance(mode_probability, (int, float))
+                    or not 0 <= mode_probability <= 1
+                ):
+                    errors.append(
+                        f"{label}.score_scenarios.unconditional_mode.probability must be from 0 to 1"
+                    )
+            if primary is not None:
+                if not isinstance(primary, dict):
+                    errors.append(f"{label}.score_scenarios.primary_market_mode must be null or an object")
+                else:
+                    for field in ("market", "condition", "score"):
+                        if not isinstance(primary.get(field), str) or not primary.get(field):
+                            errors.append(
+                                f"{label}.score_scenarios.primary_market_mode.{field} must be a non-empty string"
+                            )
+                    if not re.fullmatch(r"\d+-\d+", str(primary.get("score", ""))):
+                        errors.append(f"{label}.score_scenarios.primary_market_mode.score must use N-N")
+                    for field in ("joint_probability", "conditional_probability"):
+                        value = primary.get(field)
+                        if (
+                            isinstance(value, bool)
+                            or not isinstance(value, (int, float))
+                            or not 0 <= value <= 1
+                        ):
+                            errors.append(
+                                f"{label}.score_scenarios.primary_market_mode.{field} must be from 0 to 1"
+                            )
+                    if data.get("formal_recommendation") is True and data.get("predicted_score") != primary.get("score"):
+                        errors.append(
+                            f"{label}.predicted_score must equal primary_market_mode.score for a formal recommendation"
+                        )
     if expected_status == "success" and data.get("report_path") != expected_report_path:
         errors.append(f"{label}.report_path must equal the canonical report path")
 
