@@ -19,7 +19,7 @@
   "analysis_status": "success",
   "artifact_action": "generated",
   "odds_snapshot_at": "2026-08-01T20:15:00+08:00",
-  "analysis_version": "soccer-predict v1.3.18",
+  "analysis_version": "soccer-predict v1.3.19",
   "recommendation": "赫根 -1",
   "probability": 0.56,
   "predicted_score": "2-0",
@@ -39,7 +39,28 @@
       "joint_probability": 0.12,
       "conditional_probability": 0.21
     },
-    "settlement_scenarios": []
+    "settlement_scenarios": [],
+    "displayed_markets": [
+      {
+        "market": "赫根 -1",
+        "market_type": "asian_handicap",
+        "selection": "home",
+        "line": -1.0,
+        "full_win_mode": {
+          "score": "2-0",
+          "joint_probability": 0.12,
+          "conditional_probability": 0.21
+        }
+      }
+    ],
+    "joint_market_mode": {
+      "score": "2-0",
+      "probability": 0.12,
+      "settlements": [
+        {"market": "赫根 -1", "condition": "full_win"}
+      ]
+    },
+    "market_conflict": null
   },
   "formal_recommendation": true,
   "report_path": "soccer-prediction-journal/reports/2026-08-01/match-2912225.html",
@@ -66,6 +87,10 @@
   必须提供 `settlement_scenarios`，逐一列出所有非零的全赢、半赢/半输、走盘和全输分支；每项包含
   `condition`、`branch_probability`、`score`、`joint_probability`、`conditional_probability`。校验器会按
   比分、选择方和盘口线复算分支，不能把 `2-0` 之类的全输比分标成受让盘全赢代表。
+- v1.3.19 起，所有报告中明确展示的正式或观察市场必须进入 `displayed_markets`，并各自提供全赢条件代表比分。
+  若这些方向存在共同全赢比分，`joint_market_mode` 必须保存全赢交集中概率最高的比分及每项结算；若不存在，
+  `joint_market_mode` 必须为 `null`，同时用非空 `market_conflict` 说明拆组原因。同概率比分不得随意取第一个，
+  应优先选择对已展示市场结算更一致的比分。
 - `missing_data` 始终为数组，`error` 始终为字符串。
 - `success` 必须给出正式 `report_path`，且对应 HTML 完整存在。
 - `waiting/incomplete/failed` 的 `formal_recommendation` 必须为 `false`；可在 `recommendation` 中写“等待首发”或“数据不足，不投注”等非投注结论。

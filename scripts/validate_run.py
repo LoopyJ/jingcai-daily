@@ -29,11 +29,25 @@ def is_quarter_line(value: Any) -> bool:
 
 
 def settle_score(market_type: Any, selection: Any, line: Any, score: Any) -> str | None:
-    """Return exact split-stake settlement for AH/OU score scenarios."""
+    """Return exact settlement for a displayed market and score."""
     match = SCORE_RE.fullmatch(str(score))
-    if market_type not in {"asian_handicap", "over_under"} or not match or not is_number(line):
+    if not match:
         return None
     home_goals, away_goals = map(int, match.groups())
+
+    if market_type in {"spf", "one_x_two"}:
+        actual = "home" if home_goals > away_goals else "away" if home_goals < away_goals else "draw"
+        return "full_win" if selection == actual else "full_loss"
+
+    if market_type == "jingcai_rqspf":
+        if not is_number(line) or selection not in {"home", "draw", "away"}:
+            return None
+        adjusted = home_goals + float(line) - away_goals
+        actual = "home" if adjusted > 1e-9 else "away" if adjusted < -1e-9 else "draw"
+        return "full_win" if selection == actual else "full_loss"
+
+    if market_type not in {"asian_handicap", "over_under"} or not is_number(line):
+        return None
     legs = [float(line)]
     if is_quarter_line(line):
         legs = [float(line) - 0.25, float(line) + 0.25]
@@ -371,6 +385,136 @@ def validate_result_json(
                             errors.append(
                                 f"{label}.score_scenarios.settlement_scenarios branch probabilities must sum to 1"
                             )
+            if version_match and tuple(map(int, version_match.groups())) >= (1, 3, 19) and isinstance(primary, dict):
+                displayed_markets = scenarios.get("displayed_markets")
+                descriptors: list[dict[str, Any]] = []
+                displayed_names: set[str] = set()
+                if not isinstance(displayed_markets, list) or not displayed_markets:
+                    errors.append(f"{label}.score_scenarios.displayed_markets must be a non-empty array")
+                else:
+                    for index, displayed in enumerate(displayed_markets):
+                        displayed_label = f"{label}.score_scenarios.displayed_markets[{index}]"
+                        if not isinstance(displayed, dict):
+                            errors.append(f"{displayed_label} must be an object")
+                            continue
+                        for field in ("market", "market_type", "selection"):
+                            if not isinstance(displayed.get(field), str) or not displayed.get(field):
+                                errors.append(f"{displayed_label}.{field} must be a non-empty string")
+                        market_name = displayed.get("market")
+                        if isinstance(market_name, str) and market_name:
+                            if market_name in displayed_names:
+                                errors.append(f"{displayed_label}.market is duplicated")
+                            displayed_names.add(market_name)
+                        displayed_line = displayed.get("line")
+                        if displayed_line is not None and not is_number(displayed_line):
+                            errors.append(f"{displayed_label}.line must be null or numeric")
+                        full_win_mode = displayed.get("full_win_mode")
+                        if not isinstance(full_win_mode, dict):
+                            errors.append(f"{displayed_label}.full_win_mode must be an object")
+                        else:
+                            score = full_win_mode.get("score")
+                            if not SCORE_RE.fullmatch(str(score)):
+                                errors.append(f"{displayed_label}.full_win_mode.score must use N-N")
+                            for field in ("joint_probability", "conditional_probability"):
+                                value = full_win_mode.get(field)
+                                if not is_number(value) or not 0 <= value <= 1:
+                                    errors.append(f"{displayed_label}.full_win_mode.{field} must be from 0 to 1")
+                            computed = settle_score(
+                                displayed.get("market_type"),
+                                displayed.get("selection"),
+                                displayed_line,
+                                score,
+                            )
+                            if computed != "full_win":
+                                errors.append(f"{displayed_label}.full_win_mode.score does not fully win its market")
+                        descriptors.append(displayed)
+
+                primary_market_name = primary.get("market")
+                if isinstance(displayed_markets, list) and primary_market_name not in displayed_names:
+                    errors.append(f"{label}.score_scenarios.displayed_markets must include the primary market")
+
+                common_full_win_exists = bool(descriptors) and any(
+                    all(
+                        settle_score(
+                            displayed.get("market_type"),
+                            displayed.get("selection"),
+                            displayed.get("line"),
+                            f"{home_goals}-{away_goals}",
+                        ) == "full_win"
+                        for displayed in descriptors
+                    )
+                    for home_goals in range(31)
+                    for away_goals in range(31)
+                )
+                joint_market_mode = scenarios.get("joint_market_mode")
+                market_conflict = scenarios.get("market_conflict")
+                if common_full_win_exists:
+                    if not isinstance(joint_market_mode, dict):
+                        errors.append(
+                            f"{label}.score_scenarios.joint_market_mode is required when displayed markets share a full-win score"
+                        )
+                    else:
+                        joint_score = joint_market_mode.get("score")
+                        if not SCORE_RE.fullmatch(str(joint_score)):
+                            errors.append(f"{label}.score_scenarios.joint_market_mode.score must use N-N")
+                        joint_probability = joint_market_mode.get("probability")
+                        if not is_number(joint_probability) or not 0 <= joint_probability <= 1:
+                            errors.append(
+                                f"{label}.score_scenarios.joint_market_mode.probability must be from 0 to 1"
+                            )
+                        settlements = joint_market_mode.get("settlements")
+                        settlement_names: set[str] = set()
+                        if not isinstance(settlements, list) or len(settlements) != len(descriptors):
+                            errors.append(
+                                f"{label}.score_scenarios.joint_market_mode.settlements must cover every displayed market"
+                            )
+                        else:
+                            descriptor_by_name = {
+                                displayed.get("market"): displayed
+                                for displayed in descriptors
+                                if isinstance(displayed.get("market"), str)
+                            }
+                            for index, settlement in enumerate(settlements):
+                                settlement_label = f"{label}.score_scenarios.joint_market_mode.settlements[{index}]"
+                                if not isinstance(settlement, dict):
+                                    errors.append(f"{settlement_label} must be an object")
+                                    continue
+                                market_name = settlement.get("market")
+                                if market_name in settlement_names:
+                                    errors.append(f"{settlement_label}.market is duplicated")
+                                if isinstance(market_name, str):
+                                    settlement_names.add(market_name)
+                                displayed = descriptor_by_name.get(market_name)
+                                if displayed is None:
+                                    errors.append(f"{settlement_label}.market is not displayed")
+                                    continue
+                                computed = settle_score(
+                                    displayed.get("market_type"),
+                                    displayed.get("selection"),
+                                    displayed.get("line"),
+                                    joint_score,
+                                )
+                                if settlement.get("condition") != computed:
+                                    errors.append(f"{settlement_label}.condition does not match the joint score")
+                                if computed != "full_win":
+                                    errors.append(f"{settlement_label} must be full_win for a joint market mode")
+                            if settlement_names != displayed_names:
+                                errors.append(
+                                    f"{label}.score_scenarios.joint_market_mode.settlements must match displayed markets"
+                                )
+                    if market_conflict not in (None, ""):
+                        errors.append(
+                            f"{label}.score_scenarios.market_conflict must be null when a joint full-win score exists"
+                        )
+                else:
+                    if joint_market_mode is not None:
+                        errors.append(
+                            f"{label}.score_scenarios.joint_market_mode must be null when displayed markets conflict"
+                        )
+                    if not isinstance(market_conflict, str) or not market_conflict.strip():
+                        errors.append(
+                            f"{label}.score_scenarios.market_conflict must explain incompatible displayed markets"
+                        )
     if expected_status == "success" and data.get("report_path") != expected_report_path:
         errors.append(f"{label}.report_path must equal the canonical report path")
 
