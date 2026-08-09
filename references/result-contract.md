@@ -19,22 +19,27 @@
   "analysis_status": "success",
   "artifact_action": "generated",
   "odds_snapshot_at": "2026-08-01T20:15:00+08:00",
-  "analysis_version": "soccer-predict v1.3.9",
+  "analysis_version": "soccer-predict v1.3.18",
   "recommendation": "赫根 -1",
   "probability": 0.56,
   "predicted_score": "2-0",
   "score_scenarios": {
     "unconditional_mode": {
       "score": "2-0",
-      "probability": 0.12
+      "probability": 0.12,
+      "primary_market_settlement": "full_win"
     },
     "primary_market_mode": {
       "market": "赫根 -1",
+      "market_type": "asian_handicap",
+      "selection": "home",
+      "line": -1.0,
       "condition": "full_win",
       "score": "2-0",
       "joint_probability": 0.12,
       "conditional_probability": 0.21
-    }
+    },
+    "settlement_scenarios": []
   },
   "formal_recommendation": true,
   "report_path": "soccer-prediction-journal/reports/2026-08-01/match-2912225.html",
@@ -56,6 +61,11 @@
   亚盘和竞彩让球胜平负必须按各自结算规则确定条件。旧版1.0产物缺少该字段时仍可读取，但刷新/新生成时必须补齐。
 - `predicted_score` 作为兼容字段保留。存在正式推荐时，它必须等于 `primary_market_mode.score`；仅有观察方向时，
   若全局众数会输掉该观察盘口，报告必须同时展示两个场景，不能只显示裸 `predicted_score`。
+- v1.3.18 起，`primary_market_mode` 还必须提供 `market_type`、`selection` 和 `line`（无线市场可为 `null`），
+  `unconditional_mode.primary_market_settlement` 必须说明全局众数在主方向下如何结算。四分之一亚盘或大小球
+  必须提供 `settlement_scenarios`，逐一列出所有非零的全赢、半赢/半输、走盘和全输分支；每项包含
+  `condition`、`branch_probability`、`score`、`joint_probability`、`conditional_probability`。校验器会按
+  比分、选择方和盘口线复算分支，不能把 `2-0` 之类的全输比分标成受让盘全赢代表。
 - `missing_data` 始终为数组，`error` 始终为字符串。
 - `success` 必须给出正式 `report_path`，且对应 HTML 完整存在。
 - `waiting/incomplete/failed` 的 `formal_recommendation` 必须为 `false`；可在 `recommendation` 中写“等待首发”或“数据不足，不投注”等非投注结论。

@@ -16,6 +16,61 @@ ANALYSIS_STATUSES = {"success", "waiting", "incomplete", "failed"}
 RUN_ACTIONS = {"generated", "refreshed", "reused", "not_run"}
 ARTIFACT_ACTIONS = {"generated", "refreshed", "not_run"}
 MATCH_ID_RE = re.compile(r"^[0-9]+$")
+SCORE_RE = re.compile(r"^(\d+)-(\d+)$")
+SETTLEMENTS = {"full_win", "half_win", "push", "half_loss", "full_loss"}
+
+
+def is_number(value: Any) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float))
+
+
+def is_quarter_line(value: Any) -> bool:
+    return is_number(value) and abs(value * 4 - round(value * 4)) < 1e-9 and round(value * 4) % 2 != 0
+
+
+def settle_score(market_type: Any, selection: Any, line: Any, score: Any) -> str | None:
+    """Return exact split-stake settlement for AH/OU score scenarios."""
+    match = SCORE_RE.fullmatch(str(score))
+    if market_type not in {"asian_handicap", "over_under"} or not match or not is_number(line):
+        return None
+    home_goals, away_goals = map(int, match.groups())
+    legs = [float(line)]
+    if is_quarter_line(line):
+        legs = [float(line) - 0.25, float(line) + 0.25]
+
+    results: list[str] = []
+    for leg in legs:
+        if market_type == "asian_handicap":
+            if selection == "home":
+                value = home_goals - away_goals + leg
+            elif selection == "away":
+                value = away_goals - home_goals + leg
+            else:
+                return None
+        else:
+            total = home_goals + away_goals
+            if selection == "over":
+                value = total - leg
+            elif selection == "under":
+                value = leg - total
+            else:
+                return None
+        results.append("win" if value > 1e-9 else "loss" if value < -1e-9 else "push")
+
+    wins = results.count("win")
+    pushes = results.count("push")
+    losses = results.count("loss")
+    if wins == len(results):
+        return "full_win"
+    if wins and pushes:
+        return "half_win"
+    if pushes == len(results):
+        return "push"
+    if losses and pushes:
+        return "half_loss"
+    if losses == len(results):
+        return "full_loss"
+    return None
 
 
 def load_json(path: Path, errors: list[str], label: str) -> dict[str, Any] | None:
@@ -174,7 +229,7 @@ def validate_result_json(
             if not isinstance(unconditional, dict):
                 errors.append(f"{label}.score_scenarios.unconditional_mode must be an object")
             else:
-                if not re.fullmatch(r"\d+-\d+", str(unconditional.get("score", ""))):
+                if not SCORE_RE.fullmatch(str(unconditional.get("score", ""))):
                     errors.append(f"{label}.score_scenarios.unconditional_mode.score must use N-N")
                 mode_probability = unconditional.get("probability")
                 if (
@@ -194,7 +249,7 @@ def validate_result_json(
                             errors.append(
                                 f"{label}.score_scenarios.primary_market_mode.{field} must be a non-empty string"
                             )
-                    if not re.fullmatch(r"\d+-\d+", str(primary.get("score", ""))):
+                    if not SCORE_RE.fullmatch(str(primary.get("score", ""))):
                         errors.append(f"{label}.score_scenarios.primary_market_mode.score must use N-N")
                     for field in ("joint_probability", "conditional_probability"):
                         value = primary.get(field)
@@ -210,6 +265,112 @@ def validate_result_json(
                         errors.append(
                             f"{label}.predicted_score must equal primary_market_mode.score for a formal recommendation"
                         )
+            if version_match and tuple(map(int, version_match.groups())) >= (1, 3, 18) and isinstance(primary, dict):
+                for field in ("market_type", "selection"):
+                    if not isinstance(primary.get(field), str) or not primary.get(field):
+                        errors.append(
+                            f"{label}.score_scenarios.primary_market_mode.{field} must be a non-empty string"
+                        )
+                line = primary.get("line")
+                if line is not None and not is_number(line):
+                    errors.append(f"{label}.score_scenarios.primary_market_mode.line must be null or numeric")
+                if primary.get("condition") != "full_win":
+                    errors.append(f"{label}.score_scenarios.primary_market_mode.condition must be full_win")
+
+                market_type = primary.get("market_type")
+                selection = primary.get("selection")
+                primary_settlement = settle_score(market_type, selection, line, primary.get("score"))
+                if market_type in {"asian_handicap", "over_under"} and primary_settlement != "full_win":
+                    errors.append(
+                        f"{label}.score_scenarios.primary_market_mode.score does not fully win its market"
+                    )
+
+                unconditional_settlement = unconditional.get("primary_market_settlement") if isinstance(unconditional, dict) else None
+                if unconditional_settlement not in SETTLEMENTS:
+                    errors.append(
+                        f"{label}.score_scenarios.unconditional_mode.primary_market_settlement is invalid"
+                    )
+                computed_unconditional = settle_score(
+                    market_type,
+                    selection,
+                    line,
+                    unconditional.get("score") if isinstance(unconditional, dict) else None,
+                )
+                if computed_unconditional is not None and unconditional_settlement != computed_unconditional:
+                    errors.append(
+                        f"{label}.score_scenarios.unconditional_mode.primary_market_settlement does not match its score"
+                    )
+
+                settlement_scenarios = scenarios.get("settlement_scenarios")
+                if not isinstance(settlement_scenarios, list):
+                    errors.append(f"{label}.score_scenarios.settlement_scenarios must be an array")
+                else:
+                    seen_conditions: set[str] = set()
+                    full_win_score = None
+                    branch_probability_total = 0.0
+                    for index, scenario in enumerate(settlement_scenarios):
+                        scenario_label = f"{label}.score_scenarios.settlement_scenarios[{index}]"
+                        if not isinstance(scenario, dict):
+                            errors.append(f"{scenario_label} must be an object")
+                            continue
+                        condition = scenario.get("condition")
+                        if condition not in SETTLEMENTS:
+                            errors.append(f"{scenario_label}.condition is invalid")
+                        elif condition in seen_conditions:
+                            errors.append(f"{scenario_label}.condition is duplicated")
+                        else:
+                            seen_conditions.add(condition)
+                        score = scenario.get("score")
+                        if not SCORE_RE.fullmatch(str(score)):
+                            errors.append(f"{scenario_label}.score must use N-N")
+                        for field in ("branch_probability", "joint_probability", "conditional_probability"):
+                            value = scenario.get(field)
+                            if not is_number(value) or not 0 <= value <= 1:
+                                errors.append(f"{scenario_label}.{field} must be from 0 to 1")
+                        branch_probability = scenario.get("branch_probability")
+                        joint_probability = scenario.get("joint_probability")
+                        conditional_probability = scenario.get("conditional_probability")
+                        if is_number(branch_probability):
+                            branch_probability_total += branch_probability
+                            if branch_probability <= 0:
+                                errors.append(f"{scenario_label}.branch_probability must be positive")
+                        if is_number(joint_probability) and is_number(branch_probability) and joint_probability > branch_probability + 1e-9:
+                            errors.append(f"{scenario_label}.joint_probability cannot exceed branch_probability")
+                        if (
+                            is_number(joint_probability)
+                            and is_number(branch_probability)
+                            and branch_probability > 0
+                            and is_number(conditional_probability)
+                            and abs(conditional_probability - joint_probability / branch_probability) > 0.005
+                        ):
+                            errors.append(
+                                f"{scenario_label}.conditional_probability does not match joint/branch probability"
+                            )
+                        computed = settle_score(market_type, selection, line, score)
+                        if computed is not None and condition != computed:
+                            errors.append(f"{scenario_label}.condition does not match its score")
+                        if condition == "full_win":
+                            full_win_score = score
+
+                    if full_win_score is not None and primary.get("score") != full_win_score:
+                        errors.append(
+                            f"{label}.score_scenarios.primary_market_mode.score must match the full_win scenario"
+                        )
+                    if is_quarter_line(line) and market_type in {"asian_handicap", "over_under"}:
+                        if "full_win" not in seen_conditions:
+                            errors.append(f"{label}.score_scenarios.settlement_scenarios must include full_win")
+                        if not ({"half_win", "half_loss"} & seen_conditions):
+                            errors.append(
+                                f"{label}.score_scenarios.settlement_scenarios must include a half-settlement branch for a quarter line"
+                            )
+                        if unconditional_settlement not in seen_conditions:
+                            errors.append(
+                                f"{label}.score_scenarios.settlement_scenarios must include the unconditional mode branch"
+                            )
+                        if abs(branch_probability_total - 1.0) > 0.005:
+                            errors.append(
+                                f"{label}.score_scenarios.settlement_scenarios branch probabilities must sum to 1"
+                            )
     if expected_status == "success" and data.get("report_path") != expected_report_path:
         errors.append(f"{label}.report_path must equal the canonical report path")
 
