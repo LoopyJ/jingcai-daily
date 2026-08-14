@@ -137,13 +137,36 @@ JSON 是每场必需产物，必须符合 jingcai-daily/references/result-contra
 success 必须同时生成完整 HTML；waiting、incomplete 或 failed 仍必须生成 JSON，HTML 可省略。
 如果分析单元无法写 JSON，返回完整 JSON payload，由主 agent 写入运行目录。
 关键赔率、开球状态、阵容或独立核验数据缺失时，不得给出高置信度正式推荐。
+使用 soccer-predict v1.3.23 或更高版本时，OU 必须由
+`scripts/soccer_ou_model.py estimate` 生成；结果 JSON 保存规范
+`ou_model` 和 `shadow_forecast.ou`，不得手工填写总 λ 或使用默认小球方向。
 ```
 
 主 agent 必须保证每个候选 match ID 最终都有且只有一个结果 JSON。分析单元完全失败时，由主 agent 生成 `analysis_status=failed` 的 JSON，保留错误信息。
 
 ## Step 3：校验、发布、汇总和归档
 
-### 3.1 完整性校验
+### 3.1 OU 批量方向审计与完整性校验
+
+所有分析单元返回后，主 agent 先从每场结果中收集规范
+`shadow_forecast.ou`，写入本次运行目录的 `ou-batch-forecasts.json`。当
+方向性 OU（`over|under`，不含 `abstain`）至少 8 场时，必须在发布前运行：
+
+```text
+python .agents/skills/soccer-predict/scripts/soccer_ou_model.py audit \
+  --input soccer-prediction-journal/reports/{business_date}/runs/{run_id}/ou-batch-forecasts.json \
+  --output soccer-prediction-journal/reports/{business_date}/runs/{run_id}/ou-batch-audit.json
+```
+
+- 将 `ou_batch_audit_path` 写入 manifest。审计输入和输出都属于运行证据，
+  不得写入正式日期目录根部。
+- `status=review_required` 时，检查每场市场隐含 λ、特征符号、缺失值中性、
+  证据覆盖和逐项 λ 贡献；不得为了降低集中度机械翻转方向。
+- 只要 `formal_publication_blocked=true`，本次集中方向中的 OU 全部降为
+  非正式观察，保留原影子方向与 EV；AH/竞彩等独立市场仍可按各自门槛发布。
+  降级后重新生成受影响 JSON/HTML，并重新运行审计，确认
+  `formal_direction_counts` 为零后才进入完整性校验。
+- 少于 8 个方向性 OU 时仍可保存审计结果，但不强制创建审计文件。
 
 所有分析单元返回后，先补齐 `run-manifest.json`，再运行：
 
@@ -154,7 +177,8 @@ python .agents/skills/jingcai-daily/scripts/validate_run.py \
   --phase attempt
 ```
 
-校验失败时先修复 manifest 或运行产物，不生成成功汇总，也不写历史。
+校验失败或 OU 审计尚有正式集中方向时，先修复 manifest 或运行产物，
+不生成成功汇总，也不写历史。
 
 ### 3.2 安全发布
 
@@ -171,6 +195,9 @@ python .agents/skills/jingcai-daily/scripts/validate_run.py \
 3. `waiting`、`incomplete` 和 `failed` 单独列出原因；刷新失败且保留旧版本时明确标注旧版本时间。
 4. 更新 `reports/{business_date}/daily-summary.html`，包含业务窗口、运行 ID、赔率截点、来源、状态与动作统计、推荐、失败清单、报告链接和免责声明。
 5. 不创建 `daily-summary-v2.html` 等变体绕过幂等规则；同一业务日的正式汇总始终更新固定文件。
+6. 汇总必须分列 OU 正式推荐、非正式影子方向和 `abstain`；存在
+   `ou-batch-audit.json` 时展示方向计数、集中度、审计状态和是否触发正式降级，
+   不得把观察方向写成普通预测推荐。
 
 ### 3.4 历史归档与旧数据兼容
 
