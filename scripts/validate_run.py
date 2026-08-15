@@ -18,6 +18,7 @@ ARTIFACT_ACTIONS = {"generated", "refreshed", "not_run"}
 MATCH_ID_RE = re.compile(r"^[0-9]+$")
 SCORE_RE = re.compile(r"^(\d+)-(\d+)$")
 SETTLEMENTS = {"full_win", "half_win", "push", "half_loss", "full_loss"}
+ACTION_STATUSES = {"formal_standard", "formal_cautious", "direction_only"}
 
 
 def is_number(value: Any) -> bool:
@@ -148,7 +149,7 @@ def resolve_relative_path(
     return resolved
 
 
-def check_html(path: Path | None, label: str, errors: list[str]) -> None:
+def check_markdown(path: Path | None, label: str, errors: list[str]) -> None:
     if path is None:
         return
     try:
@@ -159,10 +160,19 @@ def check_html(path: Path | None, label: str, errors: list[str]) -> None:
     except (OSError, UnicodeError) as exc:
         errors.append(f"{label} cannot be read as UTF-8: {path}: {exc}")
         return
+    if path.suffix.lower() != ".md":
+        errors.append(f"{label} must use the .md extension: {path}")
+    stripped_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not stripped_lines:
+        errors.append(f"{label} is empty: {path}")
+        return
+    if not stripped_lines[0].startswith("# "):
+        errors.append(f"{label} must start with a level-1 Markdown heading: {path}")
+    if sum(1 for line in stripped_lines if line.startswith("## ")) < 2:
+        errors.append(f"{label} must contain at least two level-2 sections: {path}")
     lowered = text.lower()
-    for marker in ("<!doctype html", "<html", "<head", "<body"):
-        if marker not in lowered:
-            errors.append(f"{label} is missing {marker!r}: {path}")
+    if "<!doctype html" in lowered or "<html" in lowered:
+        errors.append(f"{label} must not contain an HTML document: {path}")
 
 
 def validate_result_json(
@@ -233,6 +243,43 @@ def validate_result_json(
     if expected_status != "success" and data.get("formal_recommendation") is not False:
         errors.append(f"{label} cannot contain a formal recommendation when status is {expected_status}")
     version_match = re.search(r"(\d+)\.(\d+)\.(\d+)", str(data.get("analysis_version", "")))
+    if version_match and tuple(map(int, version_match.groups())) >= (1, 3, 25):
+        primary_direction = data.get("primary_direction")
+        action_status = data.get("action_status")
+        stars = data.get("stars")
+        stake_cap = data.get("stake_cap")
+        if expected_status == "success" and (
+            not isinstance(primary_direction, str) or not primary_direction.strip()
+        ):
+            errors.append(
+                f"{label}.primary_direction must be a non-empty string for v1.3.25 success"
+            )
+        elif expected_status != "success" and primary_direction is not None and not isinstance(
+            primary_direction, str
+        ):
+            errors.append(f"{label}.primary_direction must be null or a string")
+        if action_status not in ACTION_STATUSES:
+            errors.append(f"{label}.action_status is invalid: {action_status!r}")
+        if not is_number(stars) or not 0 <= stars <= 5:
+            errors.append(f"{label}.stars must be a number from 0 to 5")
+        if not is_number(stake_cap) or stake_cap < 0:
+            errors.append(f"{label}.stake_cap must be a non-negative number")
+        if action_status == "formal_cautious":
+            if is_number(stars) and stars > 1:
+                errors.append(f"{label}.formal_cautious stars cannot exceed 1")
+            if is_number(stake_cap) and stake_cap > 0.25:
+                errors.append(f"{label}.formal_cautious stake_cap cannot exceed 0.25")
+        if action_status == "direction_only":
+            if stars != 0 or stake_cap != 0:
+                errors.append(f"{label}.direction_only must use stars=0 and stake_cap=0")
+            if data.get("formal_recommendation") is not False:
+                errors.append(f"{label}.direction_only cannot be a formal recommendation")
+        if action_status in {"formal_standard", "formal_cautious"} and data.get(
+            "formal_recommendation"
+        ) is not True:
+            errors.append(f"{label}.{action_status} must set formal_recommendation=true")
+        if expected_status != "success" and action_status != "direction_only":
+            errors.append(f"{label} non-success results must use action_status=direction_only")
     if version_match and tuple(map(int, version_match.groups())) >= (1, 3, 17):
         scenarios = data.get("score_scenarios")
         if not isinstance(scenarios, dict):
@@ -611,12 +658,12 @@ def validate_manifest(project_root: Path, manifest_path: Path, phase: str) -> li
             errors.append(f"{label}.previous_success_retained must be a boolean")
 
         canonical_result_rel = f"soccer-prediction-journal/reports/{business_date}/match-{match_id}.json"
-        canonical_report_rel = f"soccer-prediction-journal/reports/{business_date}/match-{match_id}.html"
+        canonical_report_rel = f"soccer-prediction-journal/reports/{business_date}/match-{match_id}.md"
         attempt_result_rel = (
             f"soccer-prediction-journal/reports/{business_date}/runs/{run_id}/match-{match_id}.json"
         )
         attempt_report_rel = (
-            f"soccer-prediction-journal/reports/{business_date}/runs/{run_id}/match-{match_id}.html"
+            f"soccer-prediction-journal/reports/{business_date}/runs/{run_id}/match-{match_id}.md"
         )
         if result.get("attempt_result_path") not in (None, "", attempt_result_rel):
             errors.append(f"{label}.attempt_result_path must use the fixed run path")
@@ -675,7 +722,7 @@ def validate_manifest(project_root: Path, manifest_path: Path, phase: str) -> li
                 label=f"{label} attempt JSON",
             )
             if status == "success":
-                check_html(attempt_report, f"{label} attempt HTML", errors)
+                check_markdown(attempt_report, f"{label} attempt Markdown", errors)
 
         if canonical_required:
             final_data = load_json(canonical_result, errors, f"{label} canonical JSON") if canonical_result else None
@@ -689,7 +736,7 @@ def validate_manifest(project_root: Path, manifest_path: Path, phase: str) -> li
                 errors=errors,
                 label=f"{label} canonical JSON",
             )
-            check_html(canonical_report, f"{label} canonical HTML", errors)
+            check_markdown(canonical_report, f"{label} canonical Markdown", errors)
 
     if len(result_ids) != len(set(result_ids)):
         errors.append("manifest.results contains duplicate match IDs")
