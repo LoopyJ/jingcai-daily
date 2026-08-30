@@ -187,10 +187,9 @@ python .agents/skills/soccer-predict/scripts/soccer_ou_model.py audit \
   不得写入正式日期目录根部。
 - `status=review_required` 时，检查每场市场隐含 λ、特征符号、缺失值中性、
   证据覆盖和逐项 λ 贡献；不得为了降低集中度机械翻转方向。
-- 只要 `formal_publication_blocked=true`，本次集中方向中的 OU 全部降为
-  非正式观察，保留原影子方向与 EV；AH/竞彩等独立市场仍可按各自门槛发布。
-  降级后重新生成受影响 JSON/Markdown，并重新运行审计，确认
-  `formal_direction_counts` 为零后才进入完整性校验。
+- OU 集中度审计只作诊断提醒，固定使用 `formal_publication_blocked=false`；不得仅因
+  同向比例把 OU 降为非正式观察。各场 OU 是否正式发布仍只由该场身份、盘口、证据覆盖、
+  阵容敏感度、压力 EV、基础 EV 和市场冲突门控决定；AH 继续按自身独立门槛处理。
 - 少于 8 个方向性 OU 时仍可保存审计结果，但不强制创建审计文件。
 
 所有分析单元返回后，先补齐 `run-manifest.json`，再运行：
@@ -202,8 +201,8 @@ python .agents/skills/jingcai-daily/scripts/validate_run.py \
   --phase attempt
 ```
 
-校验失败或 OU 审计尚有正式集中方向时，先修复 manifest 或运行产物，
-不生成成功汇总，也不写历史。
+校验失败时先修复 manifest 或运行产物，不生成成功汇总，也不写历史。OU 正式方向集中本身
+不再构成完整性校验失败；若审计发现真实数据或符号错误，修正后重新运行审计。
 
 ### 3.2 安全发布
 
@@ -221,8 +220,9 @@ python .agents/skills/jingcai-daily/scripts/validate_run.py \
 4. 更新 `reports/{business_date}/daily-summary.md`，包含业务窗口、运行 ID、赔率截点、来源、状态与动作统计、逐场主推/行动等级/概率/EV/比分/风险、失败清单、报告链接和免责声明。
 5. 不创建 `daily-summary-v2.md` 等变体绕过幂等规则；同一业务日的正式汇总始终更新固定文件。
 6. 汇总必须分列 OU 正式推荐、非正式影子方向和 `abstain`；存在
-   `ou-batch-audit.json` 时展示方向计数、集中度、审计状态和是否触发正式降级，
-   不得把观察方向写成普通预测推荐。
+   `ou-batch-audit.json` 时展示方向计数、集中度、审计状态和
+   `publication_policy=advisory_only`。集中度本身不得触发正式降级，也不得把其他门控产生的
+   观察方向写成普通预测推荐。
 
 ### 3.4 历史归档与旧数据兼容
 
