@@ -171,11 +171,10 @@ success 必须同时生成完整 Markdown；waiting、incomplete 或 failed 仍�
 
 ## Step 3：校验、发布、汇总和归档
 
-### 3.1 OU 批量方向审计与完整性校验
+### 3.1 OU 批量统计与完整性校验
 
 所有分析单元返回后，主 agent 先从每场结果中收集规范
-`shadow_forecast.ou`，写入本次运行目录的 `ou-batch-forecasts.json`。当
-方向性 OU（`over|under`，不含 `abstain`）至少 8 场时，必须在发布前运行：
+`shadow_forecast.ou`，写入本次运行目录的 `ou-batch-forecasts.json`，并生成批次统计：
 
 ```text
 python .agents/skills/soccer-predict/scripts/soccer_ou_model.py audit \
@@ -183,14 +182,12 @@ python .agents/skills/soccer-predict/scripts/soccer_ou_model.py audit \
   --output soccer-prediction-journal/reports/{business_date}/runs/{run_id}/ou-batch-audit.json
 ```
 
-- 将 `ou_batch_audit_path` 写入 manifest。审计输入和输出都属于运行证据，
+- 将 `ou_batch_audit_path` 写入 manifest。统计输入和输出都属于运行证据，
   不得写入正式日期目录根部。
-- `status=review_required` 时，检查每场市场隐含 λ、特征符号、缺失值中性、
-  证据覆盖和逐项 λ 贡献；不得为了降低集中度机械翻转方向。
-- OU 集中度审计只作诊断提醒，固定使用 `formal_publication_blocked=false`；不得仅因
-  同向比例把 OU 降为非正式观察。各场 OU 是否正式发布仍只由该场身份、盘口、证据覆盖、
-  阵容敏感度、压力 EV、基础 EV 和市场冲突门控决定；AH 继续按自身独立门槛处理。
-- 少于 8 个方向性 OU 时仍可保存审计结果，但不强制创建审计文件。
+- 批次统计只保存方向计数、主方向、集中度和 conversion funnel，不设置集中度比例或样本数阈值，
+  不产生 `review_required`、`sensitivity_required` 或正式阻断。
+- `formal_publication_blocked` 必须为 `false`；各场 OU 是否正式发布仍只由该场身份、盘口、证据覆盖、
+  阵容敏感度、压力 EV、基础 EV 和市场冲突门控决定，AH 同理。
 
 所有分析单元返回后，先补齐 `run-manifest.json`，再运行：
 
@@ -220,8 +217,8 @@ python .agents/skills/jingcai-daily/scripts/validate_run.py \
 4. 更新 `reports/{business_date}/daily-summary.md`，包含业务窗口、运行 ID、赔率截点、来源、状态与动作统计、逐场主推/行动等级/概率/EV/比分/风险、失败清单、报告链接和免责声明。
 5. 不创建 `daily-summary-v2.md` 等变体绕过幂等规则；同一业务日的正式汇总始终更新固定文件。
 6. 汇总必须分列 OU 正式推荐、非正式影子方向和 `abstain`；存在
-   `ou-batch-audit.json` 时展示方向计数、集中度、审计状态和
-   `publication_policy=advisory_only`。集中度本身不得触发正式降级，也不得把其他门控产生的
+   `ou-batch-audit.json` 时展示方向计数、集中度、统计状态和
+   `publication_policy=descriptive_only`。集中度本身不得触发审计、正式降级，也不得把其他门控产生的
    观察方向写成普通预测推荐。
 
 ### 3.4 历史归档与旧数据兼容
