@@ -128,6 +128,12 @@
 - `success` 必须给出正式 `report_path`，且对应 Markdown 完整存在。
 - `waiting/incomplete/failed` 的 `formal_recommendation` 必须为 `false`；可在 `recommendation` 中写“等待首发”或“数据不足，不投注”等非投注结论。
 - `reused` 只出现在本次 `run-manifest.json` 的 `run_action` 中；复用时不要改写正式 JSON，正式 JSON 保留原来的 `artifact_action`。
+- 当前 `soccer-predict` 生成的正式文件是 `prediction-snapshot.v2` 结构化快照，保留其原始
+  `match`、`decision`、`score_scenarios`、`timestamp_valid` 和 provenance 字段。批量编排使用
+  `scripts/adapt_prediction.py` 将该只读快照投影为本契约的运行结果 JSON；适配器不得重算模型值。
+- 批量运行结果 JSON/Markdown 仍写入业务日 `runs/{run_id}/`；正式 soccer-predict 快照和 Markdown
+  按实际开球日写入 `reports/{kickoff_date}/`。因此跨午夜比赛的 manifest 运行证据在业务日目录，
+  `canonical_*_path` 可以安全指向次日实际开球日目录。
 - 新生成或刷新的结果必须使用 `soccer-predict v1.3.25` 或更高版本，
   并提供规范 `ou_model` 和
   `shadow_forecast.ou`。`ou_model` 必须来自 `soccer_ou_model.py estimate`，
@@ -190,8 +196,10 @@ Manifest 约束：
 - `excluded` 不进入 `candidates`，每条需保存 `reason` 和可用的原始字段。
 - `generated/refreshed` 总要有 `attempt_result_path`；状态为 `success` 时还必须有 `attempt_report_path`。
 - `reused` 不需要本次尝试路径，但必须给出已存在的正式 JSON 和 Markdown 路径。
-- 正式路径固定为 `reports/{business_date}/match-{match_id}.json|md`。
-- 所有路径使用工作区相对路径，并且必须位于当前业务日目录下；拒绝 `..`、绝对路径和目录外文件。
+- 正式路径默认使用 `reports/{kickoff_date}/match-{match_id}.json|md`；同日旧产物仍兼容
+  `reports/{business_date}/`。
+- 所有路径使用工作区相对路径，并且必须位于 `soccer-prediction-journal/reports/` 下；运行证据必须
+  位于当前业务日目录，正式路径只能使用业务日或候选实际开球日目录。拒绝 `..`、绝对路径和目录外文件。
 - 刷新失败时可保留原正式路径，但 `analysis_status` 仍记录本次失败，且 `previous_success_retained=true`。
 - 当本次运行含至少 8 个方向性 OU 影子预测时，`ou_batch_audit_path` 必填，
   固定指向本次运行目录的 `ou-batch-audit.json`。若审计返回

@@ -282,6 +282,64 @@ class ValidateRunTests(unittest.TestCase):
         self.assertIn("stars", result.stdout)
         self.assertIn("stake_cap", result.stdout)
 
+    def test_modern_snapshot_can_publish_on_actual_kickoff_date(self) -> None:
+        actual_date_dir = (
+            self.project_root
+            / "soccer-prediction-journal"
+            / "reports"
+            / "2026-08-02"
+        )
+        actual_json = actual_date_dir / f"match-{MATCH_ID}.json"
+        actual_markdown = actual_date_dir / f"match-{MATCH_ID}.md"
+        modern = {
+            "snapshot_schema_version": "prediction-snapshot.v2",
+            "match_id": MATCH_ID,
+            "timestamp_valid": True,
+            "frozen_at": "2026-08-01T20:15:00+08:00",
+            "retrieved_at": "2026-08-01T20:15:00+08:00",
+            "model_version": "soccer-predict v1.7.4",
+            "match": {
+                "match_id": MATCH_ID,
+                "league": "美职业",
+                "home": "国际迈阿密",
+                "away": "哥伦布机员",
+                "kickoff": "2026-08-02T07:30:00+08:00",
+            },
+            "decision": {
+                "primary_direction": {"market": "AH", "direction": "home"},
+                "markets": {
+                    "AH": {"direction": "home"},
+                    "OU": {"direction": "over"},
+                },
+            },
+            "score_scenarios": {},
+        }
+        self.write_json(actual_json, modern)
+        self.write_markdown(actual_markdown)
+
+        attempt_json = self.result_json()
+        attempt_json["report_path"] = (
+            f"soccer-prediction-journal/reports/2026-08-02/match-{MATCH_ID}.md"
+        )
+        self.write_json(self.run_dir / f"match-{MATCH_ID}.json", attempt_json)
+        self.write_markdown(self.run_dir / f"match-{MATCH_ID}.md")
+        result = self.manifest_result()
+        result["canonical_result_path"] = (
+            f"soccer-prediction-journal/reports/2026-08-02/match-{MATCH_ID}.json"
+        )
+        result["canonical_report_path"] = (
+            f"soccer-prediction-journal/reports/2026-08-02/match-{MATCH_ID}.md"
+        )
+        self.write_json(
+            self.run_dir / "run-manifest.json",
+            self.manifest(result),
+        )
+
+        attempt = self.run_validator("attempt")
+        self.assertEqual(attempt.returncode, 0, attempt.stdout + attempt.stderr)
+        final = self.run_validator("final")
+        self.assertEqual(final.returncode, 0, final.stdout + final.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

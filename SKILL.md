@@ -81,10 +81,13 @@ description: >
 
 使用 match ID 作为唯一稳定文件名，不使用可能随队名变化的 slug：
 
-- 正式 Markdown：`reports/{business_date}/match-{match_id}.md`
-- 正式 JSON：`reports/{business_date}/match-{match_id}.json`
+- 正式 Markdown：`reports/{kickoff_date}/match-{match_id}.md`
+- 正式 JSON：`reports/{kickoff_date}/match-{match_id}.json`
 - 本次尝试 Markdown：`reports/{business_date}/runs/{run_id}/match-{match_id}.md`
 - 本次尝试 JSON：`reports/{business_date}/runs/{run_id}/match-{match_id}.json`
+
+跨午夜比赛的运行证据仍归业务日，正式 soccer-predict 快照按实际开球日落盘；
+`canonical_*_path` 由主 agent 按候选的 `kickoff_time` 计算，不能把次日比赛强行改写到业务日根目录。
 
 ### 普通运行与刷新
 
@@ -122,7 +125,8 @@ description: >
 2. 分析单元只读取 packet，并编辑已生成的 overlay。普通路径不得读取原始快照、完整摘要、
    模型源码或完整预测框架；
 3. `python .agents/skills/soccer-predict/scripts/predict_one.py finish --run-dir <run_dir> --mode batch`：
-   默认读取该运行目录的 overlay，完成准备、建模、Markdown/JSON/聊天载荷生成和验证；
+   默认读取该运行目录的 overlay，完成准备、建模、Markdown/JSON/聊天载荷生成和验证；新版 batch
+   会把 engine 工件暂存到该运行目录，不直接写共享正式报告；
 4. 返回 `run-state.json` 的阶段、精确逐场工件路径和核心聊天载荷。单场卡住时检查现有阶段工件，
    使用原 `run_dir` 恢复；不得从头重复抓取或手工绕过 runner 重算结论。
 
@@ -164,7 +168,8 @@ success 必须同时生成完整 Markdown；waiting、incomplete 或 failed 仍�
 `analysis-overlay.json`；再运行 `predict_one.py finish --run-dir <run_dir> --mode batch`。
 不得读取完整原始快照、摘要、模型源码或预测框架来重复推导，也不得手工调用 prepare/runner
 后续写报告。结果 JSON 必须保存规范 `ou_model` 和 `shadow_forecast.ou`，不得手工填写总 λ
-或使用默认小球方向。
+或使用默认小球方向。主 agent 回收 engine 的 `prediction-snapshot.v2` 后，使用
+`scripts/adapt_prediction.py` 生成固定尝试路径的契约 JSON；该适配只投影已冻结字段，不重算模型。
 ```
 
 主 agent 必须保证每个候选 match ID 最终都有且只有一个结果 JSON。分析单元完全失败时，由主 agent 生成 `analysis_status=failed` 的 JSON，保留错误信息。

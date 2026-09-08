@@ -19,6 +19,7 @@ MATCH_ID_RE = re.compile(r"^[0-9]+$")
 SCORE_RE = re.compile(r"^(\d+)-(\d+)$")
 SETTLEMENTS = {"full_win", "half_win", "push", "half_loss", "full_loss"}
 ACTION_STATUSES = {"formal_standard", "formal_cautious", "direction_only"}
+MODERN_SNAPSHOT_SCHEMA = "prediction-snapshot.v2"
 
 
 def is_number(value: Any) -> bool:
@@ -173,6 +174,135 @@ def check_markdown(path: Path | None, label: str, errors: list[str]) -> None:
     lowered = text.lower()
     if "<!doctype html" in lowered or "<html" in lowered:
         errors.append(f"{label} must not contain an HTML document: {path}")
+
+
+def resolve_canonical_path(
+    project_root: Path,
+    value: Any,
+    *,
+    business_date: str,
+    kickoff_date: str | None,
+    match_id: str,
+    suffix: str,
+    label: str,
+    errors: list[str],
+    required: bool,
+) -> Path | None:
+    """Resolve a formal artifact under its business-day or kickoff-date root.
+
+    The batch manifest is owned by the竞彩 business day, while
+    soccer-predict's canonical snapshot is keyed by the actual kickoff date.
+    Same-day runs therefore keep the historical path, and cross-midnight runs
+    may safely publish under the next calendar date.
+    """
+    if value in (None, ""):
+        if required:
+            errors.append(f"{label} is required")
+        return None
+    if not isinstance(value, str):
+        errors.append(f"{label} must be a workspace-relative string")
+        return None
+    raw = Path(value)
+    if raw.is_absolute() or ".." in raw.parts:
+        errors.append(f"{label} must not be absolute or contain '..': {value!r}")
+        return None
+    expected_dates = {business_date}
+    if kickoff_date:
+        expected_dates.add(kickoff_date)
+    parts = raw.parts
+    expected_filename = f"match-{match_id}{suffix}"
+    if len(parts) != 4 or parts[0:2] != ("soccer-prediction-journal", "reports"):
+        errors.append(f"{label} must be a canonical reports path: {value!r}")
+        return None
+    if parts[2] not in expected_dates or parts[3] != expected_filename:
+        errors.append(
+            f"{label} must use business_date or kickoff date and the fixed match-ID path: {value!r}"
+        )
+        return None
+    resolved = (project_root / raw).resolve()
+    reports_root = (project_root / "soccer-prediction-journal" / "reports").resolve()
+    try:
+        resolved.relative_to(reports_root)
+    except ValueError:
+        errors.append(f"{label} escapes the reports directory: {value!r}")
+        return None
+    return resolved
+
+
+def _parse_kickoff_date(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value).date().isoformat()
+    except ValueError:
+        return None
+
+
+def validate_modern_snapshot(
+    data: dict[str, Any] | None,
+    *,
+    expected_match_id: str,
+    candidate: dict[str, Any],
+    errors: list[str],
+    label: str,
+) -> None:
+    """Check the identity/timing boundary of a soccer-predict v2 snapshot.
+
+    Full model and artifact semantics are already validated by
+    soccer-predict's finish entrypoint.  The batch validator rechecks the
+    cross-skill invariants that are needed before publication.
+    """
+    if data is None:
+        return
+    if data.get("snapshot_schema_version") != MODERN_SNAPSHOT_SCHEMA:
+        errors.append(f"{label}.snapshot_schema_version must be {MODERN_SNAPSHOT_SCHEMA!r}")
+    raw_id = data.get("match_id")
+    if not isinstance(raw_id, str) or raw_id != expected_match_id:
+        errors.append(f"{label}.match_id must match manifest")
+    match = data.get("match")
+    if not isinstance(match, dict):
+        errors.append(f"{label}.match must be an object")
+        return
+    # The canonical Titan007 packet is authoritative for team spelling.  The
+    # Jingcai buy page can expose a translated/alias label for the same
+    # canonical match ID (for example 3046981), so do not reject a valid
+    # snapshot solely because the display names differ across sources.
+    for field in ("league", "home", "away"):
+        if not isinstance(match.get(field), str) or not match.get(field):
+            errors.append(f"{label}.match.{field} must be a non-empty string")
+    kickoff = match.get("kickoff") or match.get("time")
+    kickoff_value = parse_iso(kickoff, f"{label}.match.kickoff", errors)
+    if kickoff_value is not None:
+        candidate_kickoff = parse_iso(candidate.get("kickoff_time"), f"candidate kickoff for {label}", errors)
+        if candidate_kickoff is not None and kickoff_value != candidate_kickoff:
+            errors.append(f"{label}.match.kickoff does not match manifest")
+    frozen = data.get("frozen_at") or data.get("retrieved_at")
+    frozen_value = parse_iso(frozen, f"{label}.frozen_at/retrieved_at", errors)
+    if kickoff_value is not None and frozen_value is not None and frozen_value >= kickoff_value:
+        errors.append(f"{label} must be frozen before kickoff")
+    if data.get("timestamp_valid") is not True:
+        errors.append(f"{label}.timestamp_valid must be true")
+    decision = data.get("decision")
+    if not isinstance(decision, dict):
+        errors.append(f"{label}.decision must be an object")
+        return
+    market_map = decision.get("markets")
+    if not isinstance(market_map, dict):
+        errors.append(f"{label}.decision.markets must be an object")
+    else:
+        for market_name in ("AH", "OU"):
+            market = market_map.get(market_name)
+            if not isinstance(market, dict):
+                errors.append(f"{label}.decision.markets.{market_name} must be an object")
+                continue
+            direction = market.get("direction")
+            allowed = {"home", "away"} if market_name == "AH" else {"over", "under", "abstain"}
+            if direction not in allowed:
+                errors.append(f"{label}.decision.markets.{market_name}.direction is invalid")
+    if not isinstance(decision.get("primary_direction"), dict):
+        errors.append(f"{label}.decision.primary_direction must be an object")
+    if not isinstance(data.get("score_scenarios"), dict):
+        errors.append(f"{label}.score_scenarios must be an object")
 
 
 def validate_result_json(
@@ -635,6 +765,12 @@ def validate_manifest(project_root: Path, manifest_path: Path, phase: str) -> li
     if len(candidate_ids) != len(set(candidate_ids)):
         errors.append("manifest.candidates contains duplicate match IDs")
 
+    candidate_by_id = {
+        candidate.get("match_id"): candidate
+        for candidate in candidates
+        if isinstance(candidate, dict) and isinstance(candidate.get("match_id"), str)
+    }
+
     result_ids: list[str] = []
     for index, result in enumerate(results):
         label = f"result[{index}]"
@@ -657,8 +793,12 @@ def validate_manifest(project_root: Path, manifest_path: Path, phase: str) -> li
         if not isinstance(result.get("previous_success_retained"), bool):
             errors.append(f"{label}.previous_success_retained must be a boolean")
 
-        canonical_result_rel = f"soccer-prediction-journal/reports/{business_date}/match-{match_id}.json"
-        canonical_report_rel = f"soccer-prediction-journal/reports/{business_date}/match-{match_id}.md"
+        candidate = candidate_by_id.get(match_id, {})
+        kickoff_date = _parse_kickoff_date(candidate.get("kickoff_time"))
+        legacy_canonical_result_rel = f"soccer-prediction-journal/reports/{business_date}/match-{match_id}.json"
+        legacy_canonical_report_rel = f"soccer-prediction-journal/reports/{business_date}/match-{match_id}.md"
+        canonical_result_rel = result.get("canonical_result_path") or legacy_canonical_result_rel
+        canonical_report_rel = result.get("canonical_report_path") or legacy_canonical_report_rel
         attempt_result_rel = (
             f"soccer-prediction-journal/reports/{business_date}/runs/{run_id}/match-{match_id}.json"
         )
@@ -669,9 +809,21 @@ def validate_manifest(project_root: Path, manifest_path: Path, phase: str) -> li
             errors.append(f"{label}.attempt_result_path must use the fixed run path")
         if result.get("attempt_report_path") not in (None, "", attempt_report_rel):
             errors.append(f"{label}.attempt_report_path must use the fixed run path")
-        if result.get("canonical_result_path") not in (None, "", canonical_result_rel):
+        canonical_path_candidates = {
+            legacy_canonical_result_rel,
+            f"soccer-prediction-journal/reports/{kickoff_date}/match-{match_id}.json"
+            if kickoff_date
+            else legacy_canonical_result_rel,
+        }
+        canonical_report_candidates = {
+            legacy_canonical_report_rel,
+            f"soccer-prediction-journal/reports/{kickoff_date}/match-{match_id}.md"
+            if kickoff_date
+            else legacy_canonical_report_rel,
+        }
+        if result.get("canonical_result_path") not in (None, "", *canonical_path_candidates):
             errors.append(f"{label}.canonical_result_path must use the fixed match-ID path")
-        if result.get("canonical_report_path") not in (None, "", canonical_report_rel):
+        if result.get("canonical_report_path") not in (None, "", *canonical_report_candidates):
             errors.append(f"{label}.canonical_report_path must use the fixed match-ID path")
 
         attempt_required = action in {"generated", "refreshed", "not_run"}
@@ -692,20 +844,26 @@ def validate_manifest(project_root: Path, manifest_path: Path, phase: str) -> li
             required=attempt_required and status == "success",
         )
         canonical_required = action == "reused" or (phase == "final" and status == "success")
-        canonical_result = resolve_relative_path(
+        canonical_result = resolve_canonical_path(
             project_root,
             result.get("canonical_result_path"),
-            expected_root,
-            f"{label}.canonical_result_path",
-            errors,
+            business_date=business_date,
+            kickoff_date=kickoff_date,
+            match_id=match_id,
+            suffix=".json",
+            label=f"{label}.canonical_result_path",
+            errors=errors,
             required=canonical_required,
         )
-        canonical_report = resolve_relative_path(
+        canonical_report = resolve_canonical_path(
             project_root,
             result.get("canonical_report_path"),
-            expected_root,
-            f"{label}.canonical_report_path",
-            errors,
+            business_date=business_date,
+            kickoff_date=kickoff_date,
+            match_id=match_id,
+            suffix=".md",
+            label=f"{label}.canonical_report_path",
+            errors=errors,
             required=canonical_required,
         )
 
@@ -726,16 +884,25 @@ def validate_manifest(project_root: Path, manifest_path: Path, phase: str) -> li
 
         if canonical_required:
             final_data = load_json(canonical_result, errors, f"{label} canonical JSON") if canonical_result else None
-            validate_result_json(
-                final_data,
-                expected_business_date=business_date,
-                expected_match_id=match_id,
-                expected_status="success",
-                expected_artifact_action=action if action in ARTIFACT_ACTIONS else None,
-                expected_report_path=canonical_report_rel,
-                errors=errors,
-                label=f"{label} canonical JSON",
-            )
+            if isinstance(final_data, dict) and final_data.get("snapshot_schema_version") == MODERN_SNAPSHOT_SCHEMA:
+                validate_modern_snapshot(
+                    final_data,
+                    expected_match_id=match_id,
+                    candidate=candidate,
+                    errors=errors,
+                    label=f"{label} canonical JSON",
+                )
+            else:
+                validate_result_json(
+                    final_data,
+                    expected_business_date=business_date,
+                    expected_match_id=match_id,
+                    expected_status="success",
+                    expected_artifact_action=action if action in ARTIFACT_ACTIONS else None,
+                    expected_report_path=canonical_report_rel,
+                    errors=errors,
+                    label=f"{label} canonical JSON",
+                )
             check_markdown(canonical_report, f"{label} canonical Markdown", errors)
 
     if len(result_ids) != len(set(result_ids)):
