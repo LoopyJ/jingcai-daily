@@ -58,6 +58,8 @@ class AdaptPredictionTests(unittest.TestCase):
                             "feature_coverage": {
                                 "ratio": 0.68,
                                 "missing_value_policy": "neutral_zero_signal",
+                                "eligible_nonmarket_weight": 0.71,
+                                "coverage_provenance": "auto_synthesized_contract_backed",
                             },
                             "feature_contributions": [],
                         },
@@ -156,6 +158,14 @@ class AdaptPredictionTests(unittest.TestCase):
             "full_loss",
         )
         self.assertEqual(result["ou_model"]["feature_coverage"]["ratio"], 0.68)
+        self.assertEqual(
+            result["ou_model"]["feature_coverage"]["eligible_nonmarket_weight"],
+            0.71,
+        )
+        self.assertEqual(
+            result["ou_model"]["feature_coverage"]["coverage_provenance"],
+            "auto_synthesized_contract_backed",
+        )
         self.assertEqual(result["shadow_forecast"]["ou"]["model_probability"], 0.56)
         self.assertFalse(result["formal_recommendation"])
         errors: list[str] = []
@@ -170,6 +180,26 @@ class AdaptPredictionTests(unittest.TestCase):
             label="adapted result",
         )
         self.assertEqual(errors, [])
+
+    def test_legacy_snapshot_without_coverage_diagnostics_still_adapts(self) -> None:
+        snapshot = self.snapshot()
+        coverage = snapshot["decision"]["markets"]["OU"]["frozen_estimate"]["feature_coverage"]
+        coverage.pop("eligible_nonmarket_weight")
+        coverage.pop("coverage_provenance")
+
+        result = adapt_prediction.build_result(
+            snapshot,
+            business_date="2026-09-08",
+            artifact_action="generated",
+            report_path="soccer-prediction-journal/reports/2026-09-09/match-9001.md",
+        )
+
+        self.assertEqual(result["ou_model"]["feature_coverage"]["ratio"], 0.68)
+        self.assertNotIn(
+            "eligible_nonmarket_weight",
+            result["ou_model"]["feature_coverage"],
+        )
+        self.assertNotIn("coverage_provenance", result["ou_model"]["feature_coverage"])
 
 
 if __name__ == "__main__":

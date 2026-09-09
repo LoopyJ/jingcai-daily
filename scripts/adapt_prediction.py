@@ -274,14 +274,18 @@ def _ou_model(snapshot: dict[str, Any], ou: dict[str, Any]) -> dict[str, Any]:
     frozen = ou.get("frozen_estimate") if isinstance(ou.get("frozen_estimate"), dict) else {}
     coverage_source = frozen.get("feature_coverage") if isinstance(frozen.get("feature_coverage"), dict) else {}
     markets = ou.get("markets") if isinstance(ou.get("markets"), dict) else {}
+    feature_coverage = {
+        "ratio": ou.get("feature_coverage", coverage_source.get("ratio")),
+        "missing_value_policy": coverage_source.get("missing_value_policy"),
+    }
+    for field in ("eligible_nonmarket_weight", "coverage_provenance"):
+        if field in coverage_source:
+            feature_coverage[field] = coverage_source[field]
     return {
         "model_version": _text(snapshot.get("model_version")),
         "market_implied_lambda": frozen.get("market_implied_lambda"),
         "lambda": frozen.get("lambda") if isinstance(frozen.get("lambda"), dict) else {},
-        "feature_coverage": {
-            "ratio": ou.get("feature_coverage", coverage_source.get("ratio")),
-            "missing_value_policy": coverage_source.get("missing_value_policy"),
-        },
+        "feature_coverage": feature_coverage,
         "feature_contributions": (
             frozen.get("feature_contributions")
             if isinstance(frozen.get("feature_contributions"), list)

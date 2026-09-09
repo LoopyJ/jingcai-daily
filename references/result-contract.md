@@ -71,7 +71,12 @@
     "model_version": "soccer-predict v1.3.25",
     "market_implied_lambda": 2.91,
     "lambda": {"total": 2.82, "home": 1.72, "away": 1.10, "feature_delta": -0.09},
-    "feature_coverage": {"ratio": 0.68, "missing_value_policy": "neutral_zero_signal"},
+    "feature_coverage": {
+      "ratio": 0.68,
+      "missing_value_policy": "neutral_zero_signal",
+      "eligible_nonmarket_weight": 0.71,
+      "coverage_provenance": "auto_synthesized_contract_backed"
+    },
     "feature_contributions": [],
     "markets": {
       "over": {"profit_probability": 0.44, "ev": -0.12},
@@ -144,6 +149,9 @@
   `post_gate_direction` 必须为 `abstain`，`model_probability` 必须为 `null`；
   `base_model_direction`、`base_model_probability` 和 `base_ev` 仍保留门槛前的最优方向，
   以便生成 `direction_only` 的 0u 可复盘主推。
+- `ou_model.feature_coverage.eligible_nonmarket_weight` 和
+  `coverage_provenance` 是可选诊断字段；源 `prediction-snapshot.v2` 提供时必须原样保留，
+  旧快照未提供时可以省略。适配器不得用 `ratio` 反推或覆盖这两个字段。
 - OU 特征覆盖率低于 `0.55`、批量方向审计触发阻断或其他正式门槛未通过时，
   `shadow_forecast.ou.formal_status` 不得为 `formal_standard` 或 `formal_cautious`；保留影子方向时必须写
   稳定的 `nonformal_reason`。
