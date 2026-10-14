@@ -20,10 +20,36 @@ SCORE_RE = re.compile(r"^(\d+)-(\d+)$")
 SETTLEMENTS = {"full_win", "half_win", "push", "half_loss", "full_loss"}
 ACTION_STATUSES = {"formal_standard", "formal_cautious", "direction_only"}
 MODERN_SNAPSHOT_SCHEMA = "prediction-snapshot.v2"
+# Rule AD (framework v1.3.28) made one explicit direction per market mandatory and
+# retired `abstain` as a final market direction. Artifacts produced before that
+# rule may still carry an abstaining direction, so the prohibition is version
+# gated instead of absolute: history stays readable, new output cannot regress.
+MANDATORY_DIRECTION_SINCE = (1, 3, 28)
 
 
 def is_number(value: Any) -> bool:
     return not isinstance(value, bool) and isinstance(value, (int, float))
+
+
+def version_tuple(value: Any) -> tuple[int, int, int] | None:
+    """Return the numeric version triple embedded in a version string, if any."""
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", str(value or ""))
+    if not match:
+        return None
+    return tuple(map(int, match.groups()))
+
+
+def requires_explicit_direction(*version_values: Any) -> bool:
+    """True when at least one version string is at or past the Rule AD boundary.
+
+    At least one version must be parseable: an artifact that states no version at
+    all cannot claim the waiver, so it is held to the current contract.
+    """
+    parsed = [version_tuple(value) for value in version_values]
+    known = [value for value in parsed if value is not None]
+    if not known:
+        return True
+    return max(known) >= MANDATORY_DIRECTION_SINCE
 
 
 def is_quarter_line(value: Any) -> bool:
@@ -287,6 +313,9 @@ def validate_modern_snapshot(
         errors.append(f"{label}.decision must be an object")
         return
     market_map = decision.get("markets")
+    explicit_directions_required = requires_explicit_direction(
+        data.get("model_version"), data.get("analysis_version")
+    )
     if not isinstance(market_map, dict):
         errors.append(f"{label}.decision.markets must be an object")
     else:
@@ -296,13 +325,58 @@ def validate_modern_snapshot(
                 errors.append(f"{label}.decision.markets.{market_name} must be an object")
                 continue
             direction = market.get("direction")
-            allowed = {"home", "away"} if market_name == "AH" else {"over", "under", "abstain"}
+            if market_name == "AH":
+                allowed = {"home", "away"}
+            else:
+                allowed = {"over", "under"}
+                if not explicit_directions_required:
+                    allowed.add("abstain")
             if direction not in allowed:
                 errors.append(f"{label}.decision.markets.{market_name}.direction is invalid")
     if not isinstance(decision.get("primary_direction"), dict):
         errors.append(f"{label}.decision.primary_direction must be an object")
     if not isinstance(data.get("score_scenarios"), dict):
         errors.append(f"{label}.score_scenarios must be an object")
+
+
+def validate_negative_ev_delivery(
+    data: dict[str, Any], *, errors: list[str], label: str
+) -> None:
+    """Check Rule AD's non-positive-EV delivery contract (framework v1.3.28+).
+
+    A market whose two sides both carry non-positive EV changes the action, never
+    the forecast. The stronger auditable side stays the delivered direction, its
+    profit probability stays populated, and both sides' EVs stay in the artifact
+    so the batch can be reviewed. Only staking is blocked, and a negative-EV
+    batch is not itself a delivery failure.
+    """
+    shadow = data.get("shadow_forecast")
+    ou_shadow = shadow.get("ou") if isinstance(shadow, dict) else None
+    if not isinstance(ou_shadow, dict):
+        errors.append(f"{label}.shadow_forecast.ou is required for analysis_version >= v1.3.28")
+    else:
+        direction = ou_shadow.get("direction")
+        if direction not in {"over", "under"}:
+            errors.append(
+                f"{label}.shadow_forecast.ou.direction must name over or under, not {direction!r}"
+            )
+        if ou_shadow.get("post_gate_direction") != direction:
+            errors.append(
+                f"{label}.shadow_forecast.ou.post_gate_direction must equal the delivered direction"
+            )
+        if not is_number(ou_shadow.get("model_probability")):
+            errors.append(
+                f"{label}.shadow_forecast.ou.model_probability must survive a non-positive-EV result"
+            )
+    ou_model = data.get("ou_model")
+    markets = ou_model.get("markets") if isinstance(ou_model, dict) else None
+    if not isinstance(markets, dict):
+        errors.append(f"{label}.ou_model.markets is required for analysis_version >= v1.3.28")
+    else:
+        for side in ("over", "under"):
+            side_value = markets.get(side)
+            if not isinstance(side_value, dict) or not is_number(side_value.get("ev")):
+                errors.append(f"{label}.ou_model.markets.{side}.ev must be present for both sides")
 
 
 def validate_result_json(
@@ -410,6 +484,8 @@ def validate_result_json(
             errors.append(f"{label}.{action_status} must set formal_recommendation=true")
         if expected_status != "success" and action_status != "direction_only":
             errors.append(f"{label} non-success results must use action_status=direction_only")
+    if version_match and tuple(map(int, version_match.groups())) >= (1, 3, 28):
+        validate_negative_ev_delivery(data, errors=errors, label=label)
     if version_match and tuple(map(int, version_match.groups())) >= (1, 3, 17):
         scenarios = data.get("score_scenarios")
         if not isinstance(scenarios, dict):

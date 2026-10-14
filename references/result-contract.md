@@ -145,16 +145,25 @@
   保存市场隐含 λ、最终 λ、特征覆盖、逐项贡献及 OVER/UNDER 完整结算结果。
 - `shadow_forecast.ou.model_probability` 统一等于所选方向的
   `full_win + half_win`；`probability_semantics` 固定为
-  `profit_probability=full_win+half_win`。两侧 EV 都不为正时，`direction` 和
-  `post_gate_direction` 必须为 `abstain`，`model_probability` 必须为 `null`；
-  `base_model_direction`、`base_model_probability` 和 `base_ev` 仍保留门槛前的最优方向，
-  以便生成 `direction_only` 的 0u 可复盘主推。
+  `profit_probability=full_win+half_win`。两侧 EV 都不为正时，仍必须按可审计结算分布选出
+  更强的一方作为 `direction` 和 `post_gate_direction`，`model_probability` 保留该方向的
+  `full_win + half_win`（**不得**改写为 `null`），`base_model_direction`、
+  `base_model_probability` 和 `base_ev` 也一并保留。此时 `formal_status` 记为
+  `direction_only`、`nonformal_reason` 写为 `negative_ev`，最终以
+  `action_status=direction_only`、`stars=0`、`stake_cap=0` 交付。
+  `abstain` 不是合法的最终 OU 方向（Rule AD，框架 v1.3.28 起）；v1.3.28 之前的历史产物仍按
+  旧语义读取。负 EV 只改变行动等级与仓位，不使该场分析失败，也不阻断本批其余场次的交付。
+- `ou_model.markets.over` 和 `ou_model.markets.under` 必须同时保留各自的
+  `profit_probability`、`ev` 与完整结算分布，即使两侧 EV 都不为正；不得因为"无正 EV"
+  清空或改写市场结果。
+- OU 核心证据（`xg_xga`、`recent_5_match_goals` 中至少一项为 `verified_current`）未满足、
+  或其他正式门槛未通过时，`shadow_forecast.ou.formal_status` 不得为 `formal_standard`
+  或 `formal_cautious`；保留影子方向时必须写稳定的 `nonformal_reason`。历史文档中的
+  `0.55` 特征覆盖率正式准入阈值**已退休**，覆盖率只作为诊断字段读取，不再作为正式门槛；
+  当前正式准入判据是核心证据规则。
 - `ou_model.feature_coverage.eligible_nonmarket_weight` 和
   `coverage_provenance` 是可选诊断字段；源 `prediction-snapshot.v2` 提供时必须原样保留，
   旧快照未提供时可以省略。适配器不得用 `ratio` 反推或覆盖这两个字段。
-- OU 特征覆盖率低于 `0.55`、批量方向审计触发阻断或其他正式门槛未通过时，
-  `shadow_forecast.ou.formal_status` 不得为 `formal_standard` 或 `formal_cautious`；保留影子方向时必须写
-  稳定的 `nonformal_reason`。
 
 ## run-manifest.json
 
@@ -210,15 +219,16 @@ Manifest 约束：
   位于当前业务日目录，正式路径只能使用业务日或候选实际开球日目录。拒绝 `..`、绝对路径和目录外文件。
 - 刷新失败时可保留原正式路径，但 `analysis_status` 仍记录本次失败，且 `previous_success_retained=true`。
 - 当本次运行含至少 8 个方向性 OU 影子预测时，`ou_batch_audit_path` 必填，
-  固定指向本次运行目录的 `ou-batch-audit.json`。若审计返回
-  `formal_publication_blocked=true`，所有集中方向 OU 必须降为非正式，且最终
-  审计的 `formal_direction_counts.over + formal_direction_counts.under` 必须为 0。
+  固定指向本次运行目录的 `ou-batch-audit.json`。方向集中度是**描述性诊断**：
+  `publication_policy` 为 `descriptive_only`、`formal_publication_blocked` 恒为 `false`，
+  集中度本身不降级正式 OU，也不阻断发布。只有数据、身份、时间或工件矛盾这类真实完整性
+  错误才阻断交付；正式推荐数量为 0 或全部为负 EV 都不构成阻断理由。
 
 ## 发布顺序
 
 1. 冻结候选并创建 manifest。
 2. 写本次尝试 JSON/Markdown，补齐 manifest 的 `results`。
-3. 方向性 OU 至少 8 场时生成 `ou-batch-audit.json`；触发阻断则先降级正式 OU 并重跑审计。
+3. 方向性 OU 至少 8 场时生成 `ou-batch-audit.json`，作为描述性统计写入本次运行目录。
 4. 用 `validate_run.py --phase attempt` 校验。
 5. 仅发布校验通过的成功产物；失败刷新保留旧正式文件。
 6. 更新 manifest 后用 `--phase final` 校验。

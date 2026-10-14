@@ -222,7 +222,8 @@ python .agents/skills/jingcai-daily/scripts/validate_run.py \
 3. `waiting`、`incomplete` 和 `failed` 单独列出原因；刷新失败且保留旧版本时明确标注旧版本时间。
 4. 更新 `reports/{business_date}/daily-summary.md`，包含业务窗口、运行 ID、赔率截点、来源、状态与动作统计、逐场主推/行动等级/概率/EV/比分/风险、失败清单、报告链接和免责声明。
 5. 不创建 `daily-summary-v2.md` 等变体绕过幂等规则；同一业务日的正式汇总始终更新固定文件。
-6. 汇总必须分列 OU 正式推荐、非正式影子方向和 `abstain`；存在
+6. 汇总必须分列 OU 正式推荐与非正式影子方向（两者都必须给出明确方向）；`abstain` 只作为
+   v1.3.28 之前历史产物的兼容取值出现，新结果不得使用；存在
    `ou-batch-audit.json` 时展示方向计数、集中度、统计状态和
    `publication_policy=descriptive_only`。集中度本身不得触发审计、正式降级，也不得把其他门控产生的
    观察方向写成普通预测推荐。
